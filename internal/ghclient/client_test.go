@@ -95,3 +95,30 @@ func TestNotFoundIsTyped(t *testing.T) {
 		t.Errorf("GraphQL NOT_FOUND should be NotFound, got %v", err)
 	}
 }
+
+func TestPackageRepo(t *testing.T) {
+	m := metrics.New("test")
+	c := ghtest.New(t, m, map[string]http.HandlerFunc{
+		"/orgs/acme/packages/container/app":      ghtest.JSON(`{"name":"app","repository":{"full_name":"acme/app-repo"}}`),
+		"/orgs/acme/packages/container/unlinked": ghtest.JSON(`{"name":"unlinked","repository":null}`),
+		"/orgs/me/packages/container/tool": func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
+		},
+		"/users/me/packages/container/tool": ghtest.JSON(`{"name":"tool","repository":{"full_name":"me/tool-src"}}`),
+		"/orgs/acme/packages/container/denied": func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, `{"message":"forbidden"}`, http.StatusForbidden)
+		},
+	})
+	ctx := context.Background()
+	for pkg, want := range map[string]string{"app": "acme/app-repo", "unlinked": ""} {
+		if got, err := c.PackageRepo(ctx, "acme", pkg); err != nil || got != want {
+			t.Errorf("PackageRepo(acme, %s) = %q, %v; want %q", pkg, got, err, want)
+		}
+	}
+	if got, err := c.PackageRepo(ctx, "me", "tool"); err != nil || got != "me/tool-src" {
+		t.Errorf("user-owned package = %q, %v", got, err)
+	}
+	if _, err := c.PackageRepo(ctx, "acme", "denied"); err == nil || ghclient.IsNotFound(err) {
+		t.Errorf("403 must be a plain error, got %v", err)
+	}
+}

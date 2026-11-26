@@ -44,7 +44,7 @@ func TestParse(t *testing.T) {
 		t.Fatalf("Parse = %v, %v", a, err)
 	}
 	if a.Owner != "acme" || a.Repo != "app" || a.Ref != "3ef1767" || a.Tag != "dev-3ef1767-34f88ad" ||
-		a.DefaultBranch != "dev" || a.PackageWorkflow != "build.yml" || a.Health != "Healthy" ||
+		a.DefaultBranch != "dev" || a.PackageWorkflow != "" || a.WorkflowDefault != "build.yml" || a.RepoExplicit || a.Health != "Healthy" ||
 		a.Phase != "Succeeded" {
 		t.Fatalf("unexpected app: %+v", a)
 	}
@@ -66,7 +66,7 @@ func TestParseOverrides(t *testing.T) {
 		t.Fatalf("Parse = %v, %v", a, err)
 	}
 	if a.Owner != "other" || a.Repo != "repo" || a.Image != "acme/sidecar" || a.Ref != "1.0" ||
-		a.PackageWorkflow != "pkg.yml" || a.DefaultBranch != "main" {
+		a.PackageWorkflow != "pkg.yml" || a.WorkflowDefault != "build.yml" || !a.RepoExplicit || a.DefaultBranch != "main" {
 		t.Fatalf("unexpected app: %+v", a)
 	}
 }
