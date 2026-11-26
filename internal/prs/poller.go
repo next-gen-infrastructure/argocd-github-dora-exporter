@@ -56,6 +56,7 @@ type Poller struct {
 	include     *regexp.Regexp
 	firstReview bool
 	seen        map[string]struct{}
+	warned      map[string]struct{}
 }
 
 // New returns a Poller. checksInclude limits the `check` label; firstReview enables
@@ -63,7 +64,7 @@ type Poller struct {
 func New(gh *ghclient.Client, m *metrics.Metrics, log *slog.Logger, started time.Time,
 	checksInclude *regexp.Regexp, firstReview bool) *Poller {
 	return &Poller{gh: gh, m: m, log: log, started: started, include: checksInclude,
-		firstReview: firstReview, seen: map[string]struct{}{}}
+		firstReview: firstReview, seen: map[string]struct{}{}, warned: map[string]struct{}{}}
 }
 
 // Poll reads recently merged PRs of every repo. Repo failures do not stop the others.
@@ -79,6 +80,15 @@ func (p *Poller) Poll(ctx context.Context, repos []tracked.Repo) error {
 		}
 		vars := map[string]any{"owner": r.Owner, "name": r.Name, "base": r.DefaultBranch, "n": pageSize}
 		if err := p.gh.GraphQL(ctx, query, vars, &resp); err != nil {
+			if ghclient.IsNotFound(err) {
+				// A repository that does not exist or is not visible to the App is a configuration
+				// gap (wrong image to repo mapping), not an outage: say so once and move on.
+				if _, done := p.warned[r.Owner+"/"+r.Name]; !done {
+					p.warned[r.Owner+"/"+r.Name] = struct{}{}
+					p.log.Warn("repository not found, skipping PR metrics", "repo", r.Owner+"/"+r.Name)
+				}
+				continue
+			}
 			errs = append(errs, fmt.Errorf("%s/%s: %w", r.Owner, r.Name, err))
 			continue
 		}

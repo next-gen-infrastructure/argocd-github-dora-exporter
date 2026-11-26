@@ -54,10 +54,14 @@ func (c *Client) CommitSHA(ctx context.Context, owner, repo, ref string) (string
 
 // Run is a workflow run.
 type Run struct {
-	ID        int64     `json:"id"`
-	HeadSHA   string    `json:"head_sha"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID           int64     `json:"id"`
+	Path         string    `json:"path"` // .github/workflows/<file>
+	Event        string    `json:"event"`
+	Conclusion   string    `json:"conclusion"`
+	HeadSHA      string    `json:"head_sha"`
+	CreatedAt    time.Time `json:"created_at"`
+	RunStartedAt time.Time `json:"run_started_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 // WorkflowRuns lists runs of a workflow file; q holds the API filters (status, head_sha, ...).
@@ -105,4 +109,39 @@ func (c *Client) PathCommits(ctx context.Context, owner, repo, branch, path stri
 	var out []PathCommit
 	err := c.REST(ctx, fmt.Sprintf("/repos/%s/%s/commits?%s", owner, repo, q.Encode()), &out)
 	return out, err
+}
+
+// IsPullRequestRun reports whether the run was triggered by a pull request. Those runs validate a
+// change; they are not package builds, even when the same workflow also builds on push.
+func (r Run) IsPullRequestRun() bool {
+	return r.Event == "pull_request" || r.Event == "pull_request_target"
+}
+
+// RunsForSHA lists the workflow runs of every workflow for a full commit sha.
+func (c *Client) RunsForSHA(ctx context.Context, owner, repo, sha string) ([]Run, error) {
+	var r struct {
+		Runs []Run `json:"workflow_runs"`
+	}
+	path := fmt.Sprintf("/repos/%s/%s/actions/runs?head_sha=%s&per_page=100", owner, repo, url.QueryEscape(sha))
+	err := c.REST(ctx, path, &r)
+	return r.Runs, err
+}
+
+// PackageRepo returns the repository ("owner/name") a GHCR container package is linked to, or ""
+// if it is not linked. It needs the Packages read permission.
+func (c *Client) PackageRepo(ctx context.Context, owner, name string) (string, error) {
+	var r struct {
+		Repository *struct {
+			FullName string `json:"full_name"`
+		} `json:"repository"`
+	}
+	esc := url.PathEscape(name) // a package name may contain "/"
+	err := c.REST(ctx, fmt.Sprintf("/orgs/%s/packages/container/%s", owner, esc), &r)
+	if IsNotFound(err) { // the owner may be a user, not an organisation
+		err = c.REST(ctx, fmt.Sprintf("/users/%s/packages/container/%s", owner, esc), &r)
+	}
+	if err != nil || r.Repository == nil {
+		return "", err
+	}
+	return r.Repository.FullName, nil
 }

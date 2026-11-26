@@ -24,6 +24,7 @@ import (
 	"github.com/next-gen-infrastructure/argocd-github-dora-exporter/internal/leadtime"
 	"github.com/next-gen-infrastructure/argocd-github-dora-exporter/internal/metrics"
 	"github.com/next-gen-infrastructure/argocd-github-dora-exporter/internal/prs"
+	"github.com/next-gen-infrastructure/argocd-github-dora-exporter/internal/resolve"
 	"github.com/next-gen-infrastructure/argocd-github-dora-exporter/internal/tracked"
 )
 
@@ -60,7 +61,8 @@ func run(log *slog.Logger) error {
 	}
 	repos := tracked.New()
 	iu := argocd.NewStore()
-	lead := leadtime.New(gh, m, log)
+	res := resolve.New(gh, log)
+	lead := leadtime.New(gh, res, m, log)
 	tracker := deploy.New(m, time.Now, lead.Submit)
 	go lead.Run(ctx)
 
@@ -76,7 +78,9 @@ func run(log *slog.Logger) error {
 	}()
 
 	handle := func(a *argocd.App) {
-		repos.Add(tracked.Repo{Owner: a.Owner, Name: a.Repo, DefaultBranch: a.DefaultBranch, PackageWorkflow: a.PackageWorkflow})
+		// ponytail: resolves on the watch goroutine, on a cache miss only (one call per image per 6h).
+		res.Repo(a)
+		repos.Add(tracked.Repo{Owner: a.Owner, Name: a.Repo, DefaultBranch: a.DefaultBranch, App: *a})
 		tracker.Observe(a)
 	}
 	err = argocd.Watch(ctx, rc, cfg, log, iu, handle, func() {
@@ -91,7 +95,7 @@ func run(log *slog.Logger) error {
 				}
 			}
 		}()
-		go pollGitHub(ctx, log, cfg, m, gh, repos)
+		go pollGitHub(ctx, log, cfg, m, gh, res, repos)
 	})
 
 	shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -103,10 +107,10 @@ func run(log *slog.Logger) error {
 // pollGitHub runs the PR and build pollers every PollInterval. Both only observe what happens
 // after this call, so nothing that was already counted before a restart is counted again.
 func pollGitHub(ctx context.Context, log *slog.Logger, cfg *config.Config, m *metrics.Metrics,
-	gh *ghclient.Client, repos *tracked.Set) {
+	gh *ghclient.Client, res *resolve.Resolver, repos *tracked.Set) {
 	started := time.Now().Add(-cfg.InitialLookback)
 	prPoller := prs.New(gh, m, log, started, cfg.ChecksInclude, cfg.FirstReview)
-	buildPoller := builds.New(gh, m, started)
+	buildPoller := builds.New(gh, m, log, started)
 
 	timer := time.NewTimer(10 * time.Second) // let the Application cache settle first
 	defer timer.Stop()
@@ -117,6 +121,9 @@ func pollGitHub(ctx context.Context, log *slog.Logger, cfg *config.Config, m *me
 		case <-timer.C:
 		}
 		list := repos.List()
+		for i := range list {
+			list[i].PackageWorkflow = packageWorkflow(ctx, res, list[i].App)
+		}
 		err := errors.Join(prPoller.Poll(ctx, list), buildPoller.Poll(ctx, list))
 		if err != nil {
 			// One line per poll: the joined error lists every failing repo, and usually the cause is shared.
@@ -137,4 +144,16 @@ func kubeConfig() (*rest.Config, error) {
 	}
 	return clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
 		clientcmd.NewDefaultClientConfigLoadingRules(), &clientcmd.ConfigOverrides{}).ClientConfig()
+}
+
+// packageWorkflow is the workflow that builds the image of the application: the annotation, else the
+// one discovered from the current image, else the PACKAGE_WORKFLOW default (which may be empty).
+func packageWorkflow(ctx context.Context, res *resolve.Resolver, a argocd.App) string {
+	if a.PackageWorkflow != "" {
+		return a.PackageWorkflow
+	}
+	if wf := res.Discover(ctx, a); wf != "" {
+		return wf
+	}
+	return a.WorkflowDefault
 }

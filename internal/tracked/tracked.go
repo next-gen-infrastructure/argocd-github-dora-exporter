@@ -4,13 +4,18 @@ package tracked
 import (
 	"sort"
 	"sync"
+
+	"github.com/next-gen-infrastructure/argocd-github-dora-exporter/internal/argocd"
 )
 
 // Repo is a tracked repository and its per-environment settings.
 type Repo struct {
 	Owner, Name     string
 	DefaultBranch   string
-	PackageWorkflow string
+	PackageWorkflow string // effective workflow, set by the poll loop; empty means none known
+
+	// App is the latest observed Application of the repository, used to discover the workflow.
+	App argocd.App
 }
 
 // Set is a concurrent set of repositories keyed by owner/name.

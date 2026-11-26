@@ -1,11 +1,14 @@
 package prs
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -111,5 +114,32 @@ func TestPollSkipsOldAndDuplicatePRs(t *testing.T) {
 	}
 	if n := ghtest.HistCount(t, m, "dora_pr_check_duration_seconds"); n != 2 { // legacy status is untimed
 		t.Fatalf("check duration observations = %d, want 2", n)
+	}
+}
+
+func TestPollMissingRepoDoesNotFailThePoll(t *testing.T) {
+	m := metrics.New("test")
+	ok := `{"data":{"repository":{"pullRequests":{"nodes":[` + prJSON + `]}}}}`
+	gh := ghtest.New(t, m, map[string]http.HandlerFunc{"/graphql": func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if strings.Contains(string(body), `"name":"missing"`) {
+			_, _ = w.Write([]byte(`{"data":{"repository":null},"errors":[{"type":"NOT_FOUND","message":"Could not resolve to a Repository"}]}`))
+			return
+		}
+		_, _ = w.Write([]byte(ok))
+	}})
+	var logs bytes.Buffer
+	p := New(gh, m, slog.New(slog.NewTextHandler(&logs, nil)), ts("2026-11-20T00:00:00Z"), regexp.MustCompile(`.*`), false)
+	repos := []tracked.Repo{{Owner: "o", Name: "missing", DefaultBranch: "dev"}, {Owner: "o", Name: "r", DefaultBranch: "dev"}}
+	for i := 0; i < 2; i++ {
+		if err := p.Poll(context.Background(), repos); err != nil {
+			t.Fatalf("poll %d: %v", i, err)
+		}
+	}
+	if n := strings.Count(logs.String(), "repository not found"); n != 1 {
+		t.Fatalf("warned %d times, want once", n)
+	}
+	if n := ghtest.HistCount(t, m, "dora_pr_stage_seconds"); n != 3 {
+		t.Fatalf("the existing repo was not observed: %d", n)
 	}
 }

@@ -19,8 +19,10 @@ type App struct {
 	Owner, Repo     string // GitHub owner and repository name
 	Image           string // tracked image path without registry host
 	Tag, Ref        string // deployed image tag and the commit ref extracted from it
+	RepoExplicit    bool   // the repo comes from the annotation and must not be resolved
 	DefaultBranch   string
-	PackageWorkflow string
+	PackageWorkflow string // from the annotation only; empty means "find it"
+	WorkflowDefault string // PACKAGE_WORKFLOW, the last resort
 
 	// GitOps repository the Application deploys from, and where image updater writes the tag.
 	GitOpsOwner, GitOpsRepo string
@@ -84,8 +86,10 @@ func Parse(u *unstructured.Unstructured, cfg *config.Config, iu *Store) (*App, e
 	a := &App{
 		Name: u.GetName(), Alias: src.Alias, Owner: owner, Repo: name, Image: image, Tag: imgTag,
 		Ref:             tag.Ref(re, imgTag),
+		RepoExplicit:    get("repo") != "",
 		DefaultBranch:   orDefault(get("default-branch"), cfg.DefaultBranch),
-		PackageWorkflow: orDefault(get("package-workflow"), cfg.PackageWorkflow),
+		PackageWorkflow: get("package-workflow"),
+		WorkflowDefault: cfg.PackageWorkflow,
 	}
 
 	if o, n, ok := tag.GitHubURL(nestedString(u, "spec", "source", "repoURL")); ok {

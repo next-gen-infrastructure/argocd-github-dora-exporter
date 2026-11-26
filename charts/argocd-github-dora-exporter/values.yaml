@@ -30,7 +30,8 @@ config:
   defaultBranch: ""
   tagRegex: '^(?:dev|sha)-(?P<ref>[0-9a-f]{7,40})'
   tagResolver: sha
-  # Default package workflow file for all apps; empty disables build metrics unless an app sets it.
+  # Last-resort package workflow file. The workflow is found automatically from the deployed image;
+  # this is only used when that fails and the app has no package-workflow annotation.
   packageWorkflow: ""
   checksInclude: ".*"
   firstReview: false

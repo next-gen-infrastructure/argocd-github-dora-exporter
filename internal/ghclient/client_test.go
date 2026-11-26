@@ -10,6 +10,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
+	"github.com/next-gen-infrastructure/argocd-github-dora-exporter/internal/ghclient"
 	"github.com/next-gen-infrastructure/argocd-github-dora-exporter/internal/ghtest"
 	"github.com/next-gen-infrastructure/argocd-github-dora-exporter/internal/metrics"
 )
@@ -68,5 +69,56 @@ func TestGraphQLErrorsAndTokenReuse(t *testing.T) {
 	// one token request + two graphql requests
 	if got := testutil.ToFloat64(m.GitHubRequests.WithLabelValues("rest", "200")); got != 1 {
 		t.Fatalf("token requested %v times, want 1", got)
+	}
+}
+
+func TestNotFoundIsTyped(t *testing.T) {
+	m := metrics.New("test")
+	c := ghtest.New(t, m, map[string]http.HandlerFunc{
+		"/repos/o/r/actions/workflows/x.yml/runs": func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
+		},
+		"/repos/o/r/commits/abc": func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, `boom`, http.StatusInternalServerError)
+		},
+		"/graphql": ghtest.JSON(`{"data":{"repository":null},"errors":[{"type":"NOT_FOUND","message":"Could not resolve to a Repository"}]}`),
+	})
+	ctx := context.Background()
+	if _, err := c.WorkflowRuns(ctx, "o", "r", "x.yml", nil); !ghclient.IsNotFound(err) {
+		t.Errorf("REST 404 should be NotFound, got %v", err)
+	}
+	if _, err := c.CommitSHA(ctx, "o", "r", "abc"); err == nil || ghclient.IsNotFound(err) {
+		t.Errorf("REST 500 must not be NotFound, got %v", err)
+	}
+	var out struct{}
+	if err := c.GraphQL(ctx, "query{}", nil, &out); !ghclient.IsNotFound(err) {
+		t.Errorf("GraphQL NOT_FOUND should be NotFound, got %v", err)
+	}
+}
+
+func TestPackageRepo(t *testing.T) {
+	m := metrics.New("test")
+	c := ghtest.New(t, m, map[string]http.HandlerFunc{
+		"/orgs/acme/packages/container/app":      ghtest.JSON(`{"name":"app","repository":{"full_name":"acme/app-repo"}}`),
+		"/orgs/acme/packages/container/unlinked": ghtest.JSON(`{"name":"unlinked","repository":null}`),
+		"/orgs/me/packages/container/tool": func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
+		},
+		"/users/me/packages/container/tool": ghtest.JSON(`{"name":"tool","repository":{"full_name":"me/tool-src"}}`),
+		"/orgs/acme/packages/container/denied": func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, `{"message":"forbidden"}`, http.StatusForbidden)
+		},
+	})
+	ctx := context.Background()
+	for pkg, want := range map[string]string{"app": "acme/app-repo", "unlinked": ""} {
+		if got, err := c.PackageRepo(ctx, "acme", pkg); err != nil || got != want {
+			t.Errorf("PackageRepo(acme, %s) = %q, %v; want %q", pkg, got, err, want)
+		}
+	}
+	if got, err := c.PackageRepo(ctx, "me", "tool"); err != nil || got != "me/tool-src" {
+		t.Errorf("user-owned package = %q, %v", got, err)
+	}
+	if _, err := c.PackageRepo(ctx, "acme", "denied"); err == nil || ghclient.IsNotFound(err) {
+		t.Errorf("403 must be a plain error, got %v", err)
 	}
 }

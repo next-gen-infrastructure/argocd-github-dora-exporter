@@ -38,7 +38,7 @@ Environment variables:
 | `DEFAULT_BRANCH` | required | base branch release PRs target in this environment |
 | `TAG_REGEX` | `^(?:dev\|sha)-(?P<ref>[0-9a-f]{7,40})` | one named group: `ref` |
 | `TAG_RESOLVER` | `sha` | only `sha` is implemented; anything else is a startup error |
-| `PACKAGE_WORKFLOW` | empty | default package workflow file for all apps; empty disables build metrics and `dora_rollout_seconds` unless an app sets it |
+| `PACKAGE_WORKFLOW` | empty | last-resort package workflow file, used only when an app has no `package-workflow` annotation and the workflow cannot be discovered (see "Repository and workflow resolution"); empty means build, rollout and image update timings are skipped for such apps |
 | `CHECKS_INCLUDE` | `.*` | regex limiting the `check` label (cardinality) |
 | `FIRST_REVIEW` | `false` | enables `dora_pr_first_review_seconds` |
 | `LISTEN_ADDR` | `:9090` | serves `/metrics` and `/healthz` |
@@ -77,14 +77,45 @@ instrumentation image can be listed first in `status.summary.images`).
 |---|---|---|
 | `<prefix>/enabled` | `"true"` opts in, `"false"` opts out | tracked only if an ImageUpdater CR matches |
 | `<prefix>/image` | which image in `status.summary.images` is the tracked one | the ImageUpdater image, else the first one |
-| `<prefix>/repo` | GitHub `owner/name` | derived from the image path |
-| `<prefix>/package-workflow` | workflow file that builds the image | `PACKAGE_WORKFLOW` |
+| `<prefix>/repo` | GitHub `owner/name` | the repository the image's GHCR package is linked to, else derived from the image path |
+| `<prefix>/package-workflow` | workflow file that builds the image | discovered from the application's image, else `PACKAGE_WORKFLOW` |
 | `<prefix>/tag-regex` | overrides `TAG_REGEX` | `TAG_REGEX` |
 | `<prefix>/default-branch` | overrides `DEFAULT_BRANCH` | `DEFAULT_BRANCH` |
 
-**Repo derivation:** from an image `[registry/]owner/name[:tag]`, drop the registry host (the first
-segment when it contains `.` or `:`), keep `owner/name`. This assumes the image path equals the
-GitHub repository path. The metrics `repo` label is `name` only.
+**Repo derivation:** the repository is `owner/name` of the image `[registry/]owner/name[:tag]`
+without the registry host (the first segment when it contains `.` or `:`), unless it is resolved
+or annotated (next section). The metrics `repo` label is `name` only.
+
+## Repository and workflow resolution
+
+An image is not always built in a repository of the same name (a package `owner/concierge` may come
+from `owner/concierge-ai`), and repositories name their package workflow differently
+(`ci.yml`, `ci-dev.yaml` in dev and `ci-main.yaml` in prod, ...). So neither is assumed.
+
+**Repository.** Precedence: the `repo` annotation, then the repository the GHCR container package is
+linked to (`GET /orgs/{owner}/packages/container/{name}`, falling back to `/users/{owner}/...`,
+field `repository.full_name`), then the path-derived name. The result is cached (6 h; a failed or
+empty lookup for 1 h) and a failure is logged once per image, so a missing permission falls back
+quietly to the derived name. The lookup runs when an Application is first seen and blocks only on a
+cache miss.
+
+**Package workflow.** Precedence: the `package-workflow` annotation, then the discovered workflow,
+then `PACKAGE_WORKFLOW`. Discovery uses the application's current image: take the commit of the
+tag, list its workflow runs (`GET /repos/{owner}/{repo}/actions/runs?head_sha=`) and pick the run
+that built the image, that is the run which
+
+* was not triggered by a pull request,
+* succeeded,
+* started before the image updater write-back commit (the commit that set the tag, found as for
+  `dora_image_update_seconds`), and
+* finished no more than 5 minutes before it (image updater polls the registry).
+
+If several runs qualify, the one that finished closest to the write-back wins. Its workflow file
+(the base name of the run's `path`) is cached for the repository (6 h; a failed discovery 1 h). It is
+discovered at start-up from the live tag and again at every deployment, so a workflow that is
+renamed, or that differs per environment, is followed without configuration. Applications without a
+known write-back file (no ImageUpdater CR, or a non-helmvalues target) cannot be discovered and use
+the annotation or `PACKAGE_WORKFLOW`.
 
 Because annotations are read from the Application, they can be set once as constants in an
 ApplicationSet template (`enabled`, `package-workflow`) and need no per-app file.
@@ -135,6 +166,9 @@ each PR: `createdAt`, `mergedAt`, the author, the first commit, the dates of the
 the last commit with its `statusCheckRollup` contexts, `timelineItems(itemTypes:
 [READY_FOR_REVIEW_EVENT, CONVERT_TO_DRAFT_EVENT])`, and the first 10 reviews.
 
+A repository that GitHub reports as not found (wrong image to repository mapping, or not visible
+to the App) is skipped and logged once; it does not fail the poll for the other repositories.
+
 Only PRs **merged after the exporter started** are observed, each once. Nothing is backfilled:
 earlier PRs were counted by a previous process or predate the exporter. PRs merged while the
 exporter is down are lost (the same rule as for deployments).
@@ -170,7 +204,11 @@ and the time in between is in `draft`.
 
 Every `POLL_INTERVAL`, read the 50 newest completed runs of that workflow created after the
 exporter started, and for each run not seen before its jobs (`/actions/runs/{id}/jobs`). Skipped
-jobs and jobs without start or completion times are ignored.
+jobs and jobs without start or completion times are ignored. Runs triggered by a pull request
+(`event` is `pull_request` or `pull_request_target`) are ignored: the same workflow often builds
+without pushing on PRs, and those runs are not package builds. If GitHub answers 404 for the
+workflow (it does not exist in that repository), there is no build data for it: this is logged
+once per repository and is not a failed poll.
 
 - `dora_build_queue_seconds`: job `created_at` -> `started_at` (runner wait, cold start).
 - `dora_build_duration_seconds`: job `started_at` -> `completed_at`.
@@ -241,8 +279,12 @@ deduplication state is in memory.
 
 ## GitHub App permissions
 
-Read-only: Metadata, Contents, Pull requests, Actions (and Checks if the check data is not
-exposed through the rollup in your setup).
+Read-only, on the application repositories and on the GitOps repository:
+
+* Repository: Metadata, Contents, Pull requests, Actions, **Checks** and **Commit statuses** (the
+  check data of the PR timings is read through GraphQL `statusCheckRollup`).
+* Organisation: **Packages** (finds the repository of an image). Optional: without it the
+  repository is derived from the image path or taken from the annotation.
 
 ## Assumptions to verify
 
@@ -250,9 +292,10 @@ exposed through the rollup in your setup).
    compare range is a single commit and per-commit lead time collapses to one data point per
    release.
 2. `status.summary.images` contains the deployed image tag and one Application maps to one repo.
-3. The image path equals the GitHub `owner/name` (otherwise set the `repo` annotation).
+3. The image's GHCR package is linked to its source repository (or the `repo` annotation is set); without
+   either, the image path is assumed to equal the GitHub `owner/name`.
 4. Short shas are unique enough to resolve inside the tracked repository.
-5. The package workflow runs on push or dispatch only, never on pull requests. Runs are not
-   filtered by branch, because a `repository_dispatch` run reports the repository's default
+5. The package workflow builds on push or dispatch. It may also run on pull requests (building
+   without pushing); those runs are ignored. Runs are not filtered by branch, because a `repository_dispatch` run reports the repository's default
    branch even when it builds for another environment. Cancelled runs are kept under
    `conclusion="cancelled"`; use `conclusion="success"` for build duration panels.
