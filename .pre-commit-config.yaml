@@ -1,0 +1,26 @@
+fail_fast: false
+default_install_hook_types: [pre-commit, commit-msg]
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+        exclude: ^charts/.*/templates/ # Helm templates aren't valid standalone YAML
+      - id: check-added-large-files
+      - id: check-merge-conflict
+
+  - repo: https://github.com/golangci/golangci-lint
+    rev: v2.15.0
+    hooks:
+      - id: golangci-lint
+
+  - repo: local
+    hooks:
+      - id: helm-lint
+        name: helm lint
+        entry: helm lint charts/argocd-github-dora-exporter --set githubApp.id=1 --set githubApp.installationId=1 --set environment=ci --set config.defaultBranch=main
+        language: system
+        files: ^charts/
+        pass_filenames: false

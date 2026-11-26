@@ -1,0 +1,32 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "argocd-github-dora-exporter.fullname" . }}
+  namespace: {{ .Values.argocdNamespace }}
+  labels:
+    {{- include "argocd-github-dora-exporter.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["argoproj.io"]
+    resources: ["applications"]
+    verbs: ["get", "list", "watch"]
+  # Optional: Applications are discovered from Image Updater CRs. Without this rule (or the CRD)
+  # only annotated Applications are tracked.
+  - apiGroups: ["argocd-image-updater.argoproj.io"]
+    resources: ["imageupdaters"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "argocd-github-dora-exporter.fullname" . }}
+  namespace: {{ .Values.argocdNamespace }}
+  labels:
+    {{- include "argocd-github-dora-exporter.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "argocd-github-dora-exporter.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "argocd-github-dora-exporter.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}

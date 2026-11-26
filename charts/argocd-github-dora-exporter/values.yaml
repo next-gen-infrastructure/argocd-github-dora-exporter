@@ -1,0 +1,95 @@
+nameOverride: ""
+fullnameOverride: ""
+
+# Keep at 1: events are deduplicated in memory, so two replicas would double count.
+replicaCount: 1
+
+image:
+  repository: ghcr.io/next-gen-infrastructure/argocd-github-dora-exporter
+  tag: ""
+  pullPolicy: ""
+
+# Label value of the `environment` metric label, e.g. dev / prod. Required.
+environment: ""
+
+# Namespace holding the Argo CD Applications. The Role is created there.
+argocdNamespace: argocd
+
+# Read-only GitHub App (Metadata, Contents, Pull requests, Actions).
+githubApp:
+  id: ""
+  installationId: ""
+  # Existing Secret holding the PEM under the key `GITHUB_APP_PRIVATE_KEY`.
+  existingSecret: ""
+  # Or let the chart create the Secret from this value (stored in Helm release state).
+  privateKey: ""
+
+# See docs/contract.md for the meaning of every setting.
+config:
+  # Base branch release PRs target in this environment. Required.
+  defaultBranch: ""
+  tagRegex: '^(?:dev|sha)-(?P<ref>[0-9a-f]{7,40})'
+  tagResolver: sha
+  # Default package workflow file for all apps; empty disables build metrics unless an app sets it.
+  packageWorkflow: ""
+  checksInclude: ".*"
+  firstReview: false
+  # GitHub polling period. Argo CD is watched, not polled.
+  pollInterval: 5m
+  # Per-app annotations are `<annotationPrefix>/enabled`, `<annotationPrefix>/repo`, ...
+  annotationPrefix: dora-exporter
+  # API root for GitHub Enterprise Server; empty means https://api.github.com.
+  githubApiUrl: ""
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+service:
+  type: ClusterIP
+  port: 9090
+
+resources: {}
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# The DORA dashboard as a grafana-operator v5 GrafanaDashboard. Requires the grafana-operator CRDs.
+# It uses a "datasource" variable, so any Prometheus-compatible data source (Mimir, ...) works.
+grafanaDashboard:
+  enabled: false
+  labels: {}
+  # Required when enabled: must match the labels of the Grafana resource that should show the
+  # dashboard, e.g. {matchLabels: {instance: grafana}}.
+  instanceSelector: {}
+  # Needed when Grafana runs in another namespace than this release.
+  allowCrossNamespaceImport: false
+  # UID of an existing Grafana folder to file the dashboard in; empty means the General folder.
+  folderUID: ""
+  resyncPeriod: 10m
+
+# Requires the prometheus-operator CRDs.
+podMonitor:
+  enabled: false
+  interval: 1m
+  scrapeTimeout: 10s
+  # Extra labels, e.g. `release: kube-prometheus-stack` for the operator's selector.
+  labels: {}

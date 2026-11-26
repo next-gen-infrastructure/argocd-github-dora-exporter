@@ -1,0 +1,7 @@
+/argocd-github-dora-exporter
+*.test
+*.out
+.env
+
+.idea/
+*.iml

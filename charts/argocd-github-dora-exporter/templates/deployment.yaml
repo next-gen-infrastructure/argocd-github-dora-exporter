@@ -1,0 +1,96 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "argocd-github-dora-exporter.fullname" . }}
+  labels:
+    {{- include "argocd-github-dora-exporter.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  strategy:
+    # In-memory dedup state: never run two pods at once.
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "argocd-github-dora-exporter.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "argocd-github-dora-exporter.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "argocd-github-dora-exporter.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: argocd-github-dora-exporter
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy | default (eq (.Values.image.tag | default .Chart.AppVersion) "latest" | ternary "Always" "IfNotPresent") }}
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.service.port }}
+          env:
+            - name: GITHUB_APP_ID
+              value: {{ required "githubApp.id is required" .Values.githubApp.id | quote }}
+            - name: GITHUB_APP_INSTALLATION_ID
+              value: {{ required "githubApp.installationId is required" .Values.githubApp.installationId | quote }}
+            - name: GITHUB_APP_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "argocd-github-dora-exporter.secretName" . }}
+                  key: GITHUB_APP_PRIVATE_KEY
+            - name: ENVIRONMENT
+              value: {{ required "environment is required" .Values.environment | quote }}
+            - name: ARGOCD_NAMESPACE
+              value: {{ .Values.argocdNamespace | quote }}
+            - name: DEFAULT_BRANCH
+              value: {{ required "config.defaultBranch is required" .Values.config.defaultBranch | quote }}
+            - name: TAG_REGEX
+              value: {{ .Values.config.tagRegex | quote }}
+            - name: TAG_RESOLVER
+              value: {{ .Values.config.tagResolver | quote }}
+            - name: PACKAGE_WORKFLOW
+              value: {{ .Values.config.packageWorkflow | quote }}
+            - name: CHECKS_INCLUDE
+              value: {{ .Values.config.checksInclude | quote }}
+            - name: FIRST_REVIEW
+              value: {{ .Values.config.firstReview | quote }}
+            - name: POLL_INTERVAL
+              value: {{ .Values.config.pollInterval | quote }}
+            - name: ANNOTATION_PREFIX
+              value: {{ .Values.config.annotationPrefix | quote }}
+            - name: LISTEN_ADDR
+              value: {{ printf ":%v" .Values.service.port | quote }}
+            {{- if .Values.config.githubApiUrl }}
+            - name: GITHUB_API_URL
+              value: {{ .Values.config.githubApiUrl | quote }}
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

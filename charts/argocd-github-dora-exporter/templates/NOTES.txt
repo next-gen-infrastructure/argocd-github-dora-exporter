@@ -1,0 +1,7 @@
+argocd-github-dora-exporter deployed as {{ include "argocd-github-dora-exporter.fullname" . }} in {{ .Release.Namespace }}.
+
+Only Argo CD Applications in namespace "{{ .Values.argocdNamespace }}" annotated with
+"{{ .Values.config.annotationPrefix }}/enabled: \"true\"" are tracked.
+
+Metrics:      :{{ .Values.service.port }}/metrics
+Health check: :{{ .Values.service.port }}/healthz
