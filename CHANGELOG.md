@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0](https://github.com/next-gen-infrastructure/argocd-github-dora-exporter/compare/v1.0.0...v1.1.0) (2026-11-26)
+
+
+### Features
+
+* resolve repositories and package workflows, ignore PR runs ([#2](https://github.com/next-gen-infrastructure/argocd-github-dora-exporter/issues/2)) ([4e6efe2](https://github.com/next-gen-infrastructure/argocd-github-dora-exporter/commit/4e6efe2fe48603aa8c97215ba06729f19e94ce79))
+
 ## 1.0.0 (2026-11-26)
 
 
