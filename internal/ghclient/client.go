@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/rsa"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -20,6 +21,20 @@ import (
 )
 
 const apiBase = "https://api.github.com"
+
+// APIError is a non-2xx answer from GitHub (or a GraphQL NOT_FOUND, reported as 404).
+type APIError struct {
+	Status  int
+	Message string
+}
+
+func (e *APIError) Error() string { return e.Message }
+
+// IsNotFound reports whether err is a 404 from GitHub: a missing repository, workflow or commit.
+func IsNotFound(err error) bool {
+	var e *APIError
+	return errors.As(err, &e) && e.Status == http.StatusNotFound
+}
 
 // Client talks to the GitHub API as an App installation.
 type Client struct {
@@ -73,6 +88,7 @@ func (c *Client) GraphQL(ctx context.Context, query string, vars map[string]any,
 	var resp struct {
 		Data   json.RawMessage `json:"data"`
 		Errors []struct {
+			Type    string `json:"type"`
 			Message string `json:"message"`
 		} `json:"errors"`
 	}
@@ -81,7 +97,11 @@ func (c *Client) GraphQL(ctx context.Context, query string, vars map[string]any,
 		return err
 	}
 	if len(resp.Errors) > 0 {
-		return fmt.Errorf("github graphql: %s", resp.Errors[0].Message)
+		e := resp.Errors[0]
+		if e.Type == "NOT_FOUND" { // a repository that does not exist or is not visible
+			return &APIError{Status: http.StatusNotFound, Message: "github graphql: " + e.Message}
+		}
+		return fmt.Errorf("github graphql: %s", e.Message)
 	}
 	return json.Unmarshal(resp.Data, out)
 }
@@ -150,7 +170,8 @@ func (c *Client) do(ctx context.Context, api, method, url, bearer string, body, 
 		return err
 	}
 	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("github %s %s: %s: %.200s", method, req.URL.Path, resp.Status, data)
+		return &APIError{Status: resp.StatusCode,
+			Message: fmt.Sprintf("github %s %s: %s: %.200s", method, req.URL.Path, resp.Status, data)}
 	}
 	return json.Unmarshal(data, out)
 }

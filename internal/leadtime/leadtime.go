@@ -90,6 +90,9 @@ func (w *Worker) Handle(ctx context.Context, d deploy.Deployed) error {
 	}
 	runs, err := w.gh.WorkflowRuns(ctx, a.Owner, a.Repo, a.PackageWorkflow,
 		url.Values{"head_sha": {head}, "status": {"success"}, "per_page": {"10"}})
+	if ghclient.IsNotFound(err) {
+		return nil // no such workflow: lead time is done, there is just no rollout stage
+	}
 	if err != nil {
 		return err
 	}
@@ -97,6 +100,9 @@ func (w *Worker) Handle(ctx context.Context, d deploy.Deployed) error {
 	// re-runs) finish after the deployment and must not count.
 	var done time.Time
 	for _, r := range runs {
+		if r.IsPullRequestRun() {
+			continue
+		}
 		if done.IsZero() || r.UpdatedAt.Before(done) {
 			done = r.UpdatedAt
 		}

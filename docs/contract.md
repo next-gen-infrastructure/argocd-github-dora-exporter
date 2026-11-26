@@ -135,6 +135,9 @@ each PR: `createdAt`, `mergedAt`, the author, the first commit, the dates of the
 the last commit with its `statusCheckRollup` contexts, `timelineItems(itemTypes:
 [READY_FOR_REVIEW_EVENT, CONVERT_TO_DRAFT_EVENT])`, and the first 10 reviews.
 
+A repository that GitHub reports as not found (wrong image to repository mapping, or not visible
+to the App) is skipped and logged once; it does not fail the poll for the other repositories.
+
 Only PRs **merged after the exporter started** are observed, each once. Nothing is backfilled:
 earlier PRs were counted by a previous process or predate the exporter. PRs merged while the
 exporter is down are lost (the same rule as for deployments).
@@ -170,7 +173,11 @@ and the time in between is in `draft`.
 
 Every `POLL_INTERVAL`, read the 50 newest completed runs of that workflow created after the
 exporter started, and for each run not seen before its jobs (`/actions/runs/{id}/jobs`). Skipped
-jobs and jobs without start or completion times are ignored.
+jobs and jobs without start or completion times are ignored. Runs triggered by a pull request
+(`event` is `pull_request` or `pull_request_target`) are ignored: the same workflow often builds
+without pushing on PRs, and those runs are not package builds. If GitHub answers 404 for the
+workflow (it does not exist in that repository), there is no build data for it: this is logged
+once per repository and is not a failed poll.
 
 - `dora_build_queue_seconds`: job `created_at` -> `started_at` (runner wait, cold start).
 - `dora_build_duration_seconds`: job `started_at` -> `completed_at`.
@@ -252,7 +259,7 @@ exposed through the rollup in your setup).
 2. `status.summary.images` contains the deployed image tag and one Application maps to one repo.
 3. The image path equals the GitHub `owner/name` (otherwise set the `repo` annotation).
 4. Short shas are unique enough to resolve inside the tracked repository.
-5. The package workflow runs on push or dispatch only, never on pull requests. Runs are not
-   filtered by branch, because a `repository_dispatch` run reports the repository's default
+5. The package workflow builds on push or dispatch. It may also run on pull requests (building
+   without pushing); those runs are ignored. Runs are not filtered by branch, because a `repository_dispatch` run reports the repository's default
    branch even when it builds for another environment. Cancelled runs are kept under
    `conclusion="cancelled"`; use `conclusion="success"` for build duration panels.

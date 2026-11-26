@@ -55,6 +55,7 @@ func (c *Client) CommitSHA(ctx context.Context, owner, repo, ref string) (string
 // Run is a workflow run.
 type Run struct {
 	ID        int64     `json:"id"`
+	Event     string    `json:"event"`
 	HeadSHA   string    `json:"head_sha"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
@@ -105,4 +106,10 @@ func (c *Client) PathCommits(ctx context.Context, owner, repo, branch, path stri
 	var out []PathCommit
 	err := c.REST(ctx, fmt.Sprintf("/repos/%s/%s/commits?%s", owner, repo, q.Encode()), &out)
 	return out, err
+}
+
+// IsPullRequestRun reports whether the run was triggered by a pull request. Those runs validate a
+// change; they are not package builds, even when the same workflow also builds on push.
+func (r Run) IsPullRequestRun() bool {
+	return r.Event == "pull_request" || r.Event == "pull_request_target"
 }

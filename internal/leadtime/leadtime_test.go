@@ -115,3 +115,41 @@ func histSum(t *testing.T, m *metrics.Metrics, name string) float64 {
 	}
 	return sum
 }
+
+func TestHandleRolloutIgnoresPullRequestRunsAndMissingWorkflow(t *testing.T) {
+	compare := ghtest.JSON(`{"commits":[
+		{"sha":"c1","parents":[{"sha":"x"}],"commit":{"committer":{"date":"2026-11-20T08:00:00Z"}}}]}`)
+	d := deploy.Deployed{
+		App:     argocd.App{Name: "ns-app", Owner: "o", Repo: "r", Ref: "bbb2222", PackageWorkflow: "build.yml"},
+		PrevRef: "aaa1111", At: time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC),
+	}
+
+	// Only a pull request run exists for the commit: no rollout, no error.
+	m := metrics.New("test")
+	gh := ghtest.New(t, m, map[string]http.HandlerFunc{
+		"/repos/o/r/compare/aaa1111...bbb2222": compare,
+		"/repos/o/r/actions/workflows/build.yml/runs": ghtest.JSON(`{"workflow_runs":[
+			{"id":1,"event":"pull_request","head_sha":"c1","updated_at":"2026-11-20T09:45:00Z"}]}`),
+	})
+	if err := New(gh, m, slog.New(slog.DiscardHandler)).Handle(context.Background(), d); err != nil {
+		t.Fatal(err)
+	}
+	if n := ghtest.HistCount(t, m, "dora_rollout_seconds"); n != 0 {
+		t.Fatalf("rollout measured from a pull request run: %d", n)
+	}
+
+	// The workflow does not exist: lead time is still observed and nothing fails.
+	m = metrics.New("test")
+	gh = ghtest.New(t, m, map[string]http.HandlerFunc{
+		"/repos/o/r/compare/aaa1111...bbb2222": compare,
+		"/repos/o/r/actions/workflows/build.yml/runs": func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
+		},
+	})
+	if err := New(gh, m, slog.New(slog.DiscardHandler)).Handle(context.Background(), d); err != nil {
+		t.Fatalf("missing workflow must not fail the deployment: %v", err)
+	}
+	if n := ghtest.HistCount(t, m, "dora_lead_time_seconds"); n != 1 {
+		t.Fatalf("lead time not observed: %d", n)
+	}
+}

@@ -106,7 +106,7 @@ func pollGitHub(ctx context.Context, log *slog.Logger, cfg *config.Config, m *me
 	gh *ghclient.Client, repos *tracked.Set) {
 	started := time.Now().Add(-cfg.InitialLookback)
 	prPoller := prs.New(gh, m, log, started, cfg.ChecksInclude, cfg.FirstReview)
-	buildPoller := builds.New(gh, m, started)
+	buildPoller := builds.New(gh, m, log, started)
 
 	timer := time.NewTimer(10 * time.Second) // let the Application cache settle first
 	defer timer.Stop()

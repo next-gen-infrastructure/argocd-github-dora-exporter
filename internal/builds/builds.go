@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"strings"
 	"time"
@@ -22,13 +23,15 @@ const maxSeen = 100000
 type Poller struct {
 	gh      *ghclient.Client
 	m       *metrics.Metrics
+	log     *slog.Logger
 	started time.Time
 	seen    map[int64]struct{}
+	warned  map[string]struct{}
 }
 
 // New returns a Poller.
-func New(gh *ghclient.Client, m *metrics.Metrics, started time.Time) *Poller {
-	return &Poller{gh: gh, m: m, started: started, seen: map[int64]struct{}{}}
+func New(gh *ghclient.Client, m *metrics.Metrics, log *slog.Logger, started time.Time) *Poller {
+	return &Poller{gh: gh, m: m, log: log, started: started, seen: map[int64]struct{}{}, warned: map[string]struct{}{}}
 }
 
 // Poll reads new completed runs of each repo's package workflow. Repo failures do not stop
@@ -52,6 +55,15 @@ func (p *Poller) pollRepo(ctx context.Context, r tracked.Repo) error {
 		"created":  {">=" + p.started.UTC().Format("2006-01-02T15:04:05Z")},
 		"per_page": {"50"},
 	})
+	if ghclient.IsNotFound(err) {
+		// The repository has no such workflow (or the repo name is wrong): no build data, not a failure.
+		if _, done := p.warned[r.Owner+"/"+r.Name]; !done {
+			p.warned[r.Owner+"/"+r.Name] = struct{}{}
+			p.log.Warn("package workflow not found, skipping build metrics",
+				"repo", r.Owner+"/"+r.Name, "workflow", r.PackageWorkflow)
+		}
+		return nil
+	}
 	if err != nil {
 		return err
 	}
@@ -59,7 +71,7 @@ func (p *Poller) pollRepo(ctx context.Context, r tracked.Repo) error {
 		p.seen = map[int64]struct{}{} // ponytail: crude reset; runs before start are filtered anyway
 	}
 	for _, run := range runs {
-		if _, dup := p.seen[run.ID]; dup {
+		if _, dup := p.seen[run.ID]; dup || run.IsPullRequestRun() {
 			continue
 		}
 		jobs, err := p.gh.Jobs(ctx, r.Owner, r.Name, run.ID)
